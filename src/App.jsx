@@ -39,8 +39,9 @@ const CLUBS = ['Velocity', 'Breathe'];
 
 // Get club logo path
 const getClubLogo = (club) => {
-  if (club === 'Velocity') return '/velocity logo.jpg';
-  if (club === 'Breathe') return '/breathe logo.jpg';
+  const basePath = import.meta.env.BASE_URL;
+  if (club === 'Velocity') return `${basePath}velocity logo.jpg`;
+  if (club === 'Breathe') return `${basePath}breathe logo.jpg`;
   return null;
 };
 
