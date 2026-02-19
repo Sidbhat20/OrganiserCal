@@ -45,6 +45,7 @@ const getClubLogo = (club) => {
 };
 
 function App() {
+  console.log('App component mounted');
   // State
   const [tournaments, setTournaments] = useState([]);
   const [currentTournament, setCurrentTournament] = useState(null);
