@@ -16,6 +16,15 @@ const CATEGORY_KEYS = {
   Shuttle: 'shuttle',
   Referee: 'referee',
   Food: 'food',
+  Medals: 'medals',
+};
+
+const normalizePayer = (paidBy) => {
+  const value = String(paidBy || '').trim().toUpperCase();
+  if (value === 'SIDDHARTH') return 'SID';
+  if (value === 'VISHWESH') return 'VISH';
+  if (value === 'SID' || value === 'VISH' || value === 'SPLIT') return value;
+  return 'VISH';
 };
 
 // Format date for display
@@ -33,11 +42,14 @@ export const formatDate = (dateString) => {
 export const calculateExpenseTotals = (expenses = []) => {
   const totals = {
     totalExpenses: 0,
+    sidInvestment: 0,
+    vishInvestment: 0,
     categoryBreakdown: {
       court: 0,
       shuttle: 0,
       referee: 0,
       food: 0,
+      medals: 0,
       others: 0,
     },
   };
@@ -46,13 +58,37 @@ export const calculateExpenseTotals = (expenses = []) => {
     const amount = roundTo2(expense.amount);
     if (amount <= 0) return;
 
+    const paidBy = normalizePayer(expense.paidBy);
     const categoryKey = CATEGORY_KEYS[expense.category] || 'others';
 
     totals.totalExpenses += amount;
     totals.categoryBreakdown[categoryKey] += amount;
+
+    if (paidBy === 'SID') {
+      totals.sidInvestment += amount;
+      return;
+    }
+
+    if (paidBy === 'VISH') {
+      totals.vishInvestment += amount;
+      return;
+    }
+
+    const splitSid = roundTo2(expense?.split?.sidAmount);
+    const splitVish = roundTo2(expense?.split?.vishAmount);
+    if (splitSid + splitVish > 0) {
+      totals.sidInvestment += splitSid;
+      totals.vishInvestment += splitVish;
+    } else {
+      const half = roundTo2(amount / 2);
+      totals.sidInvestment += half;
+      totals.vishInvestment += roundTo2(amount - half);
+    }
   });
 
   totals.totalExpenses = roundTo2(totals.totalExpenses);
+  totals.sidInvestment = roundTo2(totals.sidInvestment);
+  totals.vishInvestment = roundTo2(totals.vishInvestment);
 
   Object.keys(totals.categoryBreakdown).forEach((key) => {
     totals.categoryBreakdown[key] = roundTo2(totals.categoryBreakdown[key]);
@@ -83,32 +119,53 @@ export const calculateProfitAndSplit = ({
   totalCollection,
   totalExpenses,
   sidInvestment,
+  vishInvestment,
 }) => {
   const collection = roundTo2(totalCollection);
   const expenses = roundTo2(totalExpenses);
   const sidInvest = roundTo2(sidInvestment);
+  const vishInvest = roundTo2(vishInvestment);
 
   const profit = roundTo2(collection - expenses);
-  const profitShareEach = roundTo2(profit / 2);
+  const sidShare = roundTo2(profit / 2);
+  const vishShare = roundTo2(profit / 2);
 
-  const sidFinal = roundTo2(sidInvest + profitShareEach);
-  const vishFinal = roundTo2(profitShareEach);
-  const amountVishweshPaysSiddharth = sidFinal;
+  const sidFinal = roundTo2(sidInvest + sidShare);
+  const vishFinal = roundTo2(vishInvest + vishShare);
+
+  const amountVishPaysSidRaw = sidFinal > sidInvest ? roundTo2(sidFinal - sidInvest) : 0;
+  const amountSidPaysVishRaw = vishFinal > vishInvest ? roundTo2(vishFinal - vishInvest) : 0;
+
+  let amountVishPaysSid = 0;
+  let amountSidPaysVish = 0;
+  let settlementMessage = 'No settlement needed';
+
+  if (sidFinal > vishFinal) {
+    amountVishPaysSid = roundTo2(sidFinal - vishFinal);
+    settlementMessage = `Vishwesh pays Siddharth ${formatCurrency(amountVishPaysSid)}`;
+  } else if (vishFinal > sidFinal) {
+    amountSidPaysVish = roundTo2(vishFinal - sidFinal);
+    settlementMessage = `Siddharth pays Vishwesh ${formatCurrency(amountSidPaysVish)}`;
+  }
 
   const settlement = {
-    from: 'VISH',
-    to: 'SID',
-    amount: amountVishweshPaysSiddharth,
-    message: `Vishwesh should pay Siddharth ${formatCurrency(amountVishweshPaysSiddharth)}`,
+    from: amountVishPaysSid > 0 ? 'VISH' : amountSidPaysVish > 0 ? 'SID' : null,
+    to: amountVishPaysSid > 0 ? 'SID' : amountSidPaysVish > 0 ? 'VISH' : null,
+    amount: amountVishPaysSid > 0 ? amountVishPaysSid : amountSidPaysVish,
+    message: settlementMessage,
   };
 
   return {
     profit,
     isProfit: profit >= 0,
-    profitShareEach,
+    sidShare,
+    vishShare,
     sidFinal,
     vishFinal,
-    amountVishweshPaysSiddharth,
+    amountVishPaysSidRaw,
+    amountSidPaysVishRaw,
+    amountVishPaysSid,
+    amountSidPaysVish,
     settlement,
   };
 };
@@ -124,12 +181,12 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
 
   const expenseTotals = calculateExpenseTotals(safeTournament.expenses || []);
   const collectionTotals = calculateCollectionTotals(safeTournament.collections || []);
-  const sidInvestment = roundTo2(safeTournament.sidInvestment || 0);
 
   const split = calculateProfitAndSplit({
     totalCollection: collectionTotals.netCollection,
     totalExpenses: expenseTotals.totalExpenses,
-    sidInvestment,
+    sidInvestment: expenseTotals.sidInvestment,
+    vishInvestment: expenseTotals.vishInvestment,
   });
 
   const categoryEntries = Object.entries(expenseTotals.categoryBreakdown)
@@ -150,7 +207,6 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
       name: safeTournament.name,
       date: safeTournament.date,
       club: safeTournament.club,
-      sidInvestment,
     },
     expenseTotals,
     collectionTotals,
@@ -163,9 +219,14 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
       totalIncome: collectionTotals.totalIncome,
       totalRefunds: collectionTotals.totalRefunds,
       profit: split.profit,
-      sidInvestment,
-      profitShareEach: split.profitShareEach,
-      amountVishweshPaysSiddharth: split.amountVishweshPaysSiddharth,
+      sidInvestment: expenseTotals.sidInvestment,
+      vishInvestment: expenseTotals.vishInvestment,
+      sidShare: split.sidShare,
+      vishShare: split.vishShare,
+      sidFinal: split.sidFinal,
+      vishFinal: split.vishFinal,
+      amountVishPaysSid: split.amountVishPaysSid,
+      amountSidPaysVish: split.amountSidPaysVish,
       settlement: split.settlement,
       categoryBreakdown: expenseTotals.categoryBreakdown,
       highestCategory: {
@@ -184,6 +245,7 @@ export const getCategoryIcon = (category) => {
     'Referee': '👨‍⚖️',
     'Shuttle': '🎯',
     'Food': '🍕',
+    'Medals': '🥇',
     'Trophy': '🏆',
     'Medal': '🥇',
     'Certificate': '📜',

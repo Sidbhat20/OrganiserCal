@@ -33,13 +33,12 @@ const TABS = {
 };
 
 // Categories and sources
-const EXPENSE_CATEGORIES = [
-  'Court', 'Referee', 'Shuttle', 'Food', 'Trophy', 'Medal', 'Certificate', 'Bhaiya', 'Other'
-];
+const EXPENSE_CATEGORIES = ['Court', 'Shuttle', 'Referee', 'Food', 'Medals', 'Other'];
 
 const COLLECTION_SOURCES = ['PlayMatches', 'UPI', 'Cash'];
 
 const CLUBS = ['Velocity', 'Breathe'];
+const LAST_PAYER_KEY = 'expense_last_payer';
 
 // Get club logo path
 const getClubLogo = (club) => {
@@ -50,7 +49,6 @@ const getClubLogo = (club) => {
 };
 
 function App() {
-  console.log('App component mounted');
   // State
   const [tournaments, setTournaments] = useState([]);
   const [currentTournament, setCurrentTournament] = useState(null);
@@ -59,11 +57,20 @@ function App() {
   const [showBillModal, setShowBillModal] = useState(false);
   
   // Form states
-  const [tournamentForm, setTournamentForm] = useState({ name: '', club: 'Velocity', date: '', sidInvestment: '' });
+  const [tournamentForm, setTournamentForm] = useState({ name: '', club: 'Velocity', date: '' });
   const [expenseForm, setExpenseForm] = useState({
-    category: 'Court',
+    category: '',
     amount: '',
+    paidBy: 'SID',
+    splitSidAmount: '',
+    splitVishAmount: '',
     note: ''
+  });
+  const [showQuickExpenseModal, setShowQuickExpenseModal] = useState(false);
+  const [toast, setToast] = useState('');
+  const [lastUsedPayer, setLastUsedPayer] = useState(() => {
+    const saved = localStorage.getItem(LAST_PAYER_KEY);
+    return saved === 'SID' || saved === 'VISH' ? saved : 'SID';
   });
   const [collectionForm, setCollectionForm] = useState({ source: 'PlayMatches', amount: '', isRefund: false });
   const [aiAnalysis, setAiAnalysis] = useState('');
@@ -87,20 +94,25 @@ function App() {
     bootstrap();
   }, [loadData]);
 
+  useEffect(() => {
+    localStorage.setItem(LAST_PAYER_KEY, lastUsedPayer);
+  }, [lastUsedPayer]);
+
+  useEffect(() => {
+    if (!toast) return undefined;
+    const timer = setTimeout(() => setToast(''), 2200);
+    return () => clearTimeout(timer);
+  }, [toast]);
+
   // Tournament handlers
   const handleCreateTournament = useCallback((e) => {
     e.preventDefault();
     if (!tournamentForm.name || !tournamentForm.date) return;
     
-    storage.createTournament(
-      tournamentForm.name,
-      tournamentForm.club,
-      tournamentForm.date,
-      Number(tournamentForm.sidInvestment) || 0
-    );
+    storage.createTournament(tournamentForm.name, tournamentForm.club, tournamentForm.date);
     loadData();
     setShowNewTournamentModal(false);
-    setTournamentForm({ name: '', club: 'Velocity', date: '', sidInvestment: '' });
+    setTournamentForm({ name: '', club: 'Velocity', date: '' });
     setActiveTab(TABS.EXPENSES);
   }, [tournamentForm, loadData]);
 
@@ -125,25 +137,105 @@ function App() {
   }, [currentTournament, loadData]);
 
   // Expense handlers
-  const handleAddExpense = useCallback((e) => {
+  const openQuickExpenseModal = useCallback((category) => {
+    const nextAmount = '';
+    const half = '';
+    setExpenseForm({
+      category,
+      amount: nextAmount,
+      paidBy: lastUsedPayer,
+      splitSidAmount: half,
+      splitVishAmount: half,
+      note: ''
+    });
+    setShowQuickExpenseModal(true);
+  }, [lastUsedPayer]);
+
+  const handleAmountChange = useCallback((value) => {
+    const amount = Number(value) || 0;
+    if (expenseForm.paidBy !== 'SPLIT') {
+      setExpenseForm((prev) => ({ ...prev, amount: value }));
+      return;
+    }
+
+    const sidHalf = amount > 0 ? (amount / 2).toFixed(2) : '';
+    const vishHalf = amount > 0 ? (amount - Number(sidHalf)).toFixed(2) : '';
+    setExpenseForm((prev) => ({
+      ...prev,
+      amount: value,
+      splitSidAmount: sidHalf,
+      splitVishAmount: vishHalf
+    }));
+  }, [expenseForm.paidBy]);
+
+  const handlePayerChange = useCallback((payer) => {
+    setExpenseForm((prev) => {
+      const amount = Number(prev.amount) || 0;
+      if (payer === 'SPLIT') {
+        const sidHalf = amount > 0 ? (amount / 2).toFixed(2) : '';
+        const vishHalf = amount > 0 ? (amount - Number(sidHalf)).toFixed(2) : '';
+        return { ...prev, paidBy: payer, splitSidAmount: sidHalf, splitVishAmount: vishHalf };
+      }
+      return { ...prev, paidBy: payer };
+    });
+
+    if (payer === 'SID' || payer === 'VISH') {
+      setLastUsedPayer(payer);
+    }
+  }, []);
+
+  const handleQuickAddExpense = useCallback((e) => {
     e.preventDefault();
-    if (!expenseForm.amount || !currentTournament) return;
+    if (!currentTournament || !expenseForm.category) return;
 
     const amount = Number(expenseForm.amount);
     if (!amount || amount <= 0) return;
 
     const note = expenseForm.note?.trim() || undefined;
 
-    storage.addExpense(currentTournament.id, {
-      category: expenseForm.category,
-      amount,
-      paidBy: 'VISH',
-      note
-    });
+    if (expenseForm.paidBy === 'SPLIT') {
+      const sidAmount = Number(expenseForm.splitSidAmount) || 0;
+      const vishAmount = Number(expenseForm.splitVishAmount) || 0;
+      const delta = Math.abs((sidAmount + vishAmount) - amount);
+
+      if (delta > 0.01) {
+        setToast('Split invalid: SID + VISH must equal total amount');
+        return;
+      }
+
+      storage.addExpense(currentTournament.id, {
+        category: expenseForm.category,
+        amount,
+        paidBy: 'SPLIT',
+        split: {
+          sidAmount,
+          vishAmount
+        },
+        note
+      });
+
+      setToast(`${formatCurrency(amount)} added to ${expenseForm.category} (SPLIT)`);
+    } else {
+      storage.addExpense(currentTournament.id, {
+        category: expenseForm.category,
+        amount,
+        paidBy: expenseForm.paidBy,
+        note
+      });
+
+      setToast(`${formatCurrency(amount)} added to ${expenseForm.category} (${expenseForm.paidBy})`);
+    }
 
     loadData();
-    setExpenseForm((prev) => ({ ...prev, amount: '', note: '' }));
-  }, [expenseForm, currentTournament, loadData]);
+    setShowQuickExpenseModal(false);
+    setExpenseForm((prev) => ({
+      ...prev,
+      amount: '',
+      splitSidAmount: '',
+      splitVishAmount: '',
+      note: ''
+    }));
+  }, [currentTournament, expenseForm, loadData]);
 
   const handleDeleteExpense = useCallback((expenseId) => {
     if (!currentTournament) return;
@@ -291,18 +383,6 @@ function App() {
           />
         </div>
 
-        <div className="form-group">
-          <label className="form-label">Siddharth Investment</label>
-          <div className="amount-input-wrapper">
-            <input
-              type="number"
-              className="form-input amount-input"
-              placeholder="0"
-              value={currentTournament?.sidInvestment || ''}
-              onChange={(e) => handleUpdateTournament('sidInvestment', Number(e.target.value) || 0)}
-            />
-          </div>
-        </div>
       </div>
 
       {currentTournament && (
@@ -326,57 +406,23 @@ function App() {
   const renderExpenses = () => (
     <div>
       <div className="card">
-        <h3 className="card-title" style={{ marginBottom: 16 }}>Add Expense</h3>
-        <form onSubmit={handleAddExpense}>
-          <div className="form-group">
-            <label className="form-label">Category</label>
-            <select 
-              className="form-input"
-              value={expenseForm.category}
-              onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
+        <h3 className="card-title" style={{ marginBottom: 16 }}>Quick Add Expense</h3>
+        <p style={{ color: 'var(--text-muted)', fontSize: 13, marginBottom: 14 }}>
+          Tap a category to add an expense in 1-2 clicks.
+        </p>
+        <div className="quick-expense-grid">
+          {EXPENSE_CATEGORIES.map((cat) => (
+            <button
+              key={cat}
+              type="button"
+              className="quick-expense-btn"
+              onClick={() => openQuickExpenseModal(cat)}
             >
-              {EXPENSE_CATEGORIES.map(cat => (
-                <option key={cat} value={cat}>{cat}</option>
-              ))}
-            </select>
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Amount</label>
-            <div className="amount-input-wrapper">
-              <input
-                type="number"
-                className="form-input amount-input"
-                placeholder="0"
-                value={expenseForm.amount}
-                onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
-              />
-            </div>
-          </div>
-          
-          <div className="form-group">
-            <label className="form-label">Paid By</label>
-            <input
-              type="text"
-              className="form-input"
-              value="VISH (from collections)"
-              disabled
-            />
-          </div>
-
-          <div className="form-group">
-            <label className="form-label">Note (optional)</label>
-            <input
-              type="text"
-              className="form-input"
-              placeholder="e.g., Shuttle box for finals"
-              value={expenseForm.note}
-              onChange={(e) => setExpenseForm({ ...expenseForm, note: e.target.value })}
-            />
-          </div>
-          
-          <button type="submit" className="btn">Add Expense</button>
-        </form>
+              <span className="quick-expense-icon">{getCategoryIcon(cat)}</span>
+              <span>{cat}</span>
+            </button>
+          ))}
+        </div>
       </div>
       
       <div className="card">
@@ -396,6 +442,12 @@ function App() {
                 <div className="list-item-icon">{getCategoryIcon(expense.category)}</div>
                 <div className="list-item-details">
                   <div className="list-item-title">{expense.category}</div>
+                  <span className={`badge badge-${String(expense.paidBy || '').toLowerCase()}`}>{expense.paidBy || 'VISH'}</span>
+                  {expense.paidBy === 'SPLIT' && (
+                    <div className="list-item-subtitle">
+                      SID {formatCurrency(expense?.split?.sidAmount)} • VISH {formatCurrency(expense?.split?.vishAmount)}
+                    </div>
+                  )}
                   {expense.note && <div className="list-item-subtitle">{expense.note}</div>}
                 </div>
               </div>
@@ -528,9 +580,11 @@ function App() {
 
         <div className="summary-card settlement-card">
           <div className="summary-card-label">Settlement</div>
-          <div className="settlement-text">Siddharth invested: {formatCurrency(currentTournament?.sidInvestment || 0)}</div>
-          <div className="settlement-text">Profit share (each): {formatCurrency(split.profitShareEach)}</div>
-          <div className="settlement-highlight">Vishwesh should pay Siddharth {formatCurrency(split.amountVishweshPaysSiddharth)}</div>
+          <div className="settlement-text">SID investment: {formatCurrency(expenseTotals.sidInvestment)}</div>
+          <div className="settlement-text">VISH investment: {formatCurrency(expenseTotals.vishInvestment)}</div>
+          <div className="settlement-text">SID final: {formatCurrency(split.sidFinal)}</div>
+          <div className="settlement-text">VISH final: {formatCurrency(split.vishFinal)}</div>
+          <div className="settlement-highlight">{split.settlement.message}</div>
         </div>
 
         <div className="summary-card">
@@ -560,57 +614,31 @@ function App() {
     return (
       <div className="bill">
         <div className="bill-header">
-          {currentTournament?.club && (
-            <img 
-              src={getClubLogo(currentTournament.club)} 
-              alt={currentTournament.club}
-              style={{ width: 48, height: 48, borderRadius: 8, objectFit: 'contain', marginBottom: 12 }}
-            />
-          )}
-          <h2 className="bill-title">{currentTournament.name}</h2>
-          <p className="bill-subtitle">
-            {currentTournament.club} Badminton • {formatDate(currentTournament.date)}
-          </p>
+          <h2 className="bill-title">Tournament Bill</h2>
         </div>
 
         <div className="bill-section">
-          <h4 className="bill-section-title">Tournament Name</h4>
           <div className="bill-table">
             <div className="bill-row">
-              <span className="bill-row-label">Name</span>
+              <span className="bill-row-label">Tournament</span>
               <span className="bill-row-value">{currentTournament.name}</span>
             </div>
-          </div>
-        </div>
-
-        <div className="bill-section">
-          <h4 className="bill-section-title">Date</h4>
-          <div className="bill-table">
             <div className="bill-row">
               <span className="bill-row-label">Date</span>
               <span className="bill-row-value">{formatDate(currentTournament.date)}</span>
             </div>
-          </div>
-        </div>
-
-        <div className="bill-section">
-          <div className="bill-total">
-            <span>Total Collection</span>
-            <span style={{ color: 'var(--accent-primary)' }}>{formatCurrency(collectionTotals.netCollection)}</span>
-          </div>
-        </div>
-
-        <div className="bill-section">
-          <div className="bill-total">
-            <span>Total Expenses</span>
-            <span style={{ color: 'var(--danger)' }}>{formatCurrency(expenseTotals.totalExpenses)}</span>
-          </div>
-        </div>
-
-        <div className="bill-section">
-          <div className="bill-total">
-            <span>Profit</span>
-            <span style={{ color: split.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>{formatCurrency(split.profit)}</span>
+            <div className="bill-row">
+              <span className="bill-row-label">Collection</span>
+              <span className="bill-row-value" style={{ color: 'var(--accent-primary)' }}>{formatCurrency(collectionTotals.netCollection)}</span>
+            </div>
+            <div className="bill-row">
+              <span className="bill-row-label">Expenses</span>
+              <span className="bill-row-value" style={{ color: 'var(--danger)' }}>{formatCurrency(expenseTotals.totalExpenses)}</span>
+            </div>
+            <div className="bill-row">
+              <span className="bill-row-label">Profit</span>
+              <span className="bill-row-value" style={{ color: split.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>{formatCurrency(split.profit)}</span>
+            </div>
           </div>
         </div>
       </div>
@@ -770,19 +798,6 @@ function App() {
                     required
                   />
                 </div>
-
-                <div className="form-group">
-                  <label className="form-label">Siddharth Investment</label>
-                  <div className="amount-input-wrapper">
-                    <input
-                      type="number"
-                      className="form-input amount-input"
-                      placeholder="0"
-                      value={tournamentForm.sidInvestment}
-                      onChange={(e) => setTournamentForm({ ...tournamentForm, sidInvestment: e.target.value })}
-                    />
-                  </div>
-                </div>
               </div>
               <div className="modal-footer">
                 <button type="button" className="btn btn-secondary" onClick={() => setShowNewTournamentModal(false)}>
@@ -825,6 +840,102 @@ function App() {
           </div>
         </div>
       )}
+
+      {showQuickExpenseModal && (
+        <div className="modal-overlay" onClick={() => setShowQuickExpenseModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 520 }}>
+            <div className="modal-header">
+              <h3 className="modal-title">Add {expenseForm.category}</h3>
+              <button className="modal-close" onClick={() => setShowQuickExpenseModal(false)}>
+                <X size={24} />
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickAddExpense}>
+              <div className="modal-body">
+                <div className="form-group">
+                  <label className="form-label">Amount</label>
+                  <div className="amount-input-wrapper">
+                    <input
+                      type="number"
+                      className="form-input amount-input"
+                      placeholder="0"
+                      value={expenseForm.amount}
+                      onChange={(e) => handleAmountChange(e.target.value)}
+                      required
+                    />
+                  </div>
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Paid By</label>
+                  <div className="pill-group">
+                    {['SID', 'VISH', 'SPLIT'].map((payer) => (
+                      <button
+                        key={payer}
+                        type="button"
+                        className={`pill-btn ${expenseForm.paidBy === payer ? 'active' : ''}`}
+                        onClick={() => handlePayerChange(payer)}
+                      >
+                        {payer}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {expenseForm.paidBy === 'SPLIT' && (
+                  <div className="split-grid">
+                    <div className="form-group">
+                      <label className="form-label">SID Amount</label>
+                      <div className="amount-input-wrapper">
+                        <input
+                          type="number"
+                          className="form-input amount-input"
+                          value={expenseForm.splitSidAmount}
+                          onChange={(e) => setExpenseForm((prev) => ({ ...prev, splitSidAmount: e.target.value }))}
+                          required
+                        />
+                      </div>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">VISH Amount</label>
+                      <div className="amount-input-wrapper">
+                        <input
+                          type="number"
+                          className="form-input amount-input"
+                          value={expenseForm.splitVishAmount}
+                          onChange={(e) => setExpenseForm((prev) => ({ ...prev, splitVishAmount: e.target.value }))}
+                          required
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label className="form-label">Note (optional)</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    placeholder="Optional note"
+                    value={expenseForm.note}
+                    onChange={(e) => setExpenseForm((prev) => ({ ...prev, note: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="modal-footer">
+                <button type="button" className="btn btn-secondary" onClick={() => setShowQuickExpenseModal(false)}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn">Add Expense</button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className="toast">{toast}</div>}
 
       {/* AI Chat Widget */}
       <AIChat currentTournament={currentTournament} financialContext={aiContext} />
