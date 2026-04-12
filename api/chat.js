@@ -73,7 +73,7 @@ export default async function handler(req, res) {
         payload: {
           model: modelName,
           messages: baseMessages,
-          max_tokens: 500,
+          max_completion_tokens: 500,
           temperature: 0.7
         }
       }
