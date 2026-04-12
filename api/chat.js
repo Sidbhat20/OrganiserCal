@@ -18,6 +18,7 @@ export default async function handler(req, res) {
     const apiKey = process.env.AZURE_OPENAI_API_KEY || process.env.VITE_AZURE_OPENAI_API_KEY || '';
     const endpoint = (process.env.AZURE_OPENAI_ENDPOINT || process.env.VITE_AZURE_OPENAI_ENDPOINT || '').replace(/\/$/, '');
     const deployment = process.env.AZURE_OPENAI_DEPLOYMENT || process.env.VITE_AZURE_OPENAI_DEPLOYMENT || 'GPT-5.4';
+    const modelName = process.env.AZURE_OPENAI_MODEL || process.env.VITE_AZURE_OPENAI_MODEL || deployment;
     const apiVersion = process.env.AZURE_OPENAI_API_VERSION || process.env.VITE_AZURE_OPENAI_API_VERSION || '2024-02-15-preview';
 
     if (!apiKey || !endpoint) {
@@ -28,29 +29,53 @@ export default async function handler(req, res) {
       return;
     }
 
-    const url = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+    const commonHeaders = {
+      'Content-Type': 'application/json',
+      'api-key': apiKey
+    };
 
-    const response = await fetch(url, {
+    const deploymentUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
+    const deploymentPayload = {
+      messages: [
+        { role: 'system', content: context },
+        ...messages
+      ],
+      max_completion_tokens: 500,
+      temperature: 0.7
+    };
+
+    let response = await fetch(deploymentUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'api-key': apiKey
-      },
-      body: JSON.stringify({
+      headers: commonHeaders,
+      body: JSON.stringify(deploymentPayload)
+    });
+
+    // Fallback for Azure AI Foundry style endpoint where model is passed in body.
+    if (!response.ok && response.status === 404) {
+      const modelUrl = `${endpoint}/models/chat/completions?api-version=${apiVersion}`;
+      const modelPayload = {
+        model: modelName,
         messages: [
           { role: 'system', content: context },
           ...messages
         ],
-        max_completion_tokens: 500,
+        max_tokens: 500,
         temperature: 0.7
-      })
-    });
+      };
+
+      response = await fetch(modelUrl, {
+        method: 'POST',
+        headers: commonHeaders,
+        body: JSON.stringify(modelPayload)
+      });
+    }
 
     if (!response.ok) {
       const details = await response.text();
       res.status(response.status).json({
         error: `Azure OpenAI API error: ${response.status}`,
-        details
+        details,
+        hint: 'Check AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT or AZURE_OPENAI_MODEL in Vercel.'
       });
       return;
     }
