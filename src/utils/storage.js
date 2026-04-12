@@ -88,13 +88,14 @@ export const initSupabaseSync = async () => {
 };
 
 // Tournament operations
-export const createTournament = (name, club, date) => {
+export const createTournament = (name, club, date, sidInvestment = 0) => {
   const data = getStorageData();
   const tournament = {
     id: generateId(),
     name,
     club,
     date,
+    sidInvestment: Number(sidInvestment) || 0,
     createdAt: new Date().toISOString(),
     expenses: [],
     collections: []

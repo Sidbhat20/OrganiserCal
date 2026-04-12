@@ -173,7 +173,7 @@ const AIChat = ({ currentTournament, financialContext }) => {
       if (errorMsg.includes('Failed to fetch') || errorMsg.includes('localhost')) {
         return 'Backend error: Make sure the backend server is running and VITE_API_BASE_URL is set correctly.';
       } else if (errorMsg.includes('Azure')) {
-        return '🔑 Azure Configuration Error: Check your .env file has correct Azure OpenAI credentials.';
+        return 'Azure configuration error: set AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT in Vercel project environment variables, then redeploy.';
       }
       
       return `❌ Error: ${errorMsg}`;

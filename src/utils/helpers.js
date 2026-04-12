@@ -18,18 +18,6 @@ const CATEGORY_KEYS = {
   Food: 'food',
 };
 
-const normalizePayer = (paidBy) => {
-  const value = String(paidBy || '').trim().toUpperCase();
-  if (value === 'SID') return 'SID';
-  if (value === 'VISH') return 'VISH';
-  if (value === 'SIDDHARTH') return 'SID';
-  if (value === 'VISHWESH') return 'VISH';
-  if (value === 'SID' || value === 'VISH') return value;
-  if (String(paidBy || '').trim() === 'Sid') return 'SID';
-  if (String(paidBy || '').trim() === 'Vish') return 'VISH';
-  return value;
-};
-
 // Format date for display
 export const formatDate = (dateString) => {
   if (!dateString) return '';
@@ -45,8 +33,6 @@ export const formatDate = (dateString) => {
 export const calculateExpenseTotals = (expenses = []) => {
   const totals = {
     totalExpenses: 0,
-    sidInvestment: 0,
-    vishInvestment: 0,
     categoryBreakdown: {
       court: 0,
       shuttle: 0,
@@ -60,26 +46,13 @@ export const calculateExpenseTotals = (expenses = []) => {
     const amount = roundTo2(expense.amount);
     if (amount <= 0) return;
 
-    const payer = normalizePayer(expense.paidBy);
     const categoryKey = CATEGORY_KEYS[expense.category] || 'others';
 
     totals.totalExpenses += amount;
     totals.categoryBreakdown[categoryKey] += amount;
-
-    if (payer === 'SID') {
-      totals.sidInvestment += amount;
-    } else if (payer === 'VISH') {
-      totals.vishInvestment += amount;
-    } else if (payer === 'BOTH') {
-      // Keep legacy data safe; new writes should never use BOTH.
-      totals.sidInvestment += amount / 2;
-      totals.vishInvestment += amount / 2;
-    }
   });
 
   totals.totalExpenses = roundTo2(totals.totalExpenses);
-  totals.sidInvestment = roundTo2(totals.sidInvestment);
-  totals.vishInvestment = roundTo2(totals.vishInvestment);
 
   Object.keys(totals.categoryBreakdown).forEach((key) => {
     totals.categoryBreakdown[key] = roundTo2(totals.categoryBreakdown[key]);
@@ -110,60 +83,32 @@ export const calculateProfitAndSplit = ({
   totalCollection,
   totalExpenses,
   sidInvestment,
-  vishInvestment,
 }) => {
   const collection = roundTo2(totalCollection);
   const expenses = roundTo2(totalExpenses);
   const sidInvest = roundTo2(sidInvestment);
-  const vishInvest = roundTo2(vishInvestment);
 
   const profit = roundTo2(collection - expenses);
-  const sidShare = roundTo2(profit / 2);
-  const vishShare = roundTo2(profit / 2);
+  const profitShareEach = roundTo2(profit / 2);
 
-  // Total amount each organizer should receive from the tournament system.
-  const sidFinal = roundTo2(sidInvest + sidShare);
-  const vishFinal = roundTo2(vishInvest + vishShare);
+  const sidFinal = roundTo2(sidInvest + profitShareEach);
+  const vishFinal = roundTo2(profitShareEach);
+  const amountVishweshPaysSiddharth = sidFinal;
 
-  // Assuming base payout is equal split of realized collection,
-  // adjust the difference through direct organizer-to-organizer settlement.
-  const basePayoutEach = roundTo2(collection / 2);
-  const sidDelta = roundTo2(sidFinal - basePayoutEach);
-  const vishDelta = roundTo2(vishFinal - basePayoutEach);
-
-  let settlement = {
-    from: null,
-    to: null,
-    amount: 0,
-    message: 'No settlement needed',
+  const settlement = {
+    from: 'VISH',
+    to: 'SID',
+    amount: amountVishweshPaysSiddharth,
+    message: `Vishwesh should pay Siddharth ${formatCurrency(amountVishweshPaysSiddharth)}`,
   };
-
-  if (sidDelta > 0) {
-    settlement = {
-      from: 'VISH',
-      to: 'SID',
-      amount: sidDelta,
-      message: `Vishwesh pays Siddharth ${formatCurrency(sidDelta)}`,
-    };
-  } else if (vishDelta > 0) {
-    settlement = {
-      from: 'SID',
-      to: 'VISH',
-      amount: vishDelta,
-      message: `Siddharth pays Vishwesh ${formatCurrency(vishDelta)}`,
-    };
-  }
 
   return {
     profit,
     isProfit: profit >= 0,
-    sidShare,
-    vishShare,
+    profitShareEach,
     sidFinal,
     vishFinal,
-    basePayoutEach,
-    sidDelta,
-    vishDelta,
+    amountVishweshPaysSiddharth,
     settlement,
   };
 };
@@ -179,12 +124,12 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
 
   const expenseTotals = calculateExpenseTotals(safeTournament.expenses || []);
   const collectionTotals = calculateCollectionTotals(safeTournament.collections || []);
+  const sidInvestment = roundTo2(safeTournament.sidInvestment || 0);
 
   const split = calculateProfitAndSplit({
     totalCollection: collectionTotals.netCollection,
     totalExpenses: expenseTotals.totalExpenses,
-    sidInvestment: expenseTotals.sidInvestment,
-    vishInvestment: expenseTotals.vishInvestment,
+    sidInvestment,
   });
 
   const categoryEntries = Object.entries(expenseTotals.categoryBreakdown)
@@ -205,6 +150,7 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
       name: safeTournament.name,
       date: safeTournament.date,
       club: safeTournament.club,
+      sidInvestment,
     },
     expenseTotals,
     collectionTotals,
@@ -217,10 +163,9 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
       totalIncome: collectionTotals.totalIncome,
       totalRefunds: collectionTotals.totalRefunds,
       profit: split.profit,
-      sidInvestment: expenseTotals.sidInvestment,
-      vishInvestment: expenseTotals.vishInvestment,
-      sidShare: split.sidShare,
-      vishShare: split.vishShare,
+      sidInvestment,
+      profitShareEach: split.profitShareEach,
+      amountVishweshPaysSiddharth: split.amountVishweshPaysSiddharth,
       settlement: split.settlement,
       categoryBreakdown: expenseTotals.categoryBreakdown,
       highestCategory: {

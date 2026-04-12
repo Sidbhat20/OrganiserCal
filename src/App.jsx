@@ -59,12 +59,10 @@ function App() {
   const [showBillModal, setShowBillModal] = useState(false);
   
   // Form states
-  const [tournamentForm, setTournamentForm] = useState({ name: '', club: 'Velocity', date: '' });
+  const [tournamentForm, setTournamentForm] = useState({ name: '', club: 'Velocity', date: '', sidInvestment: '' });
   const [expenseForm, setExpenseForm] = useState({
     category: 'Court',
     amount: '',
-    paidBy: 'SID',
-    splitSidPercent: 50,
     note: ''
   });
   const [collectionForm, setCollectionForm] = useState({ source: 'PlayMatches', amount: '', isRefund: false });
@@ -94,10 +92,15 @@ function App() {
     e.preventDefault();
     if (!tournamentForm.name || !tournamentForm.date) return;
     
-    storage.createTournament(tournamentForm.name, tournamentForm.club, tournamentForm.date);
+    storage.createTournament(
+      tournamentForm.name,
+      tournamentForm.club,
+      tournamentForm.date,
+      Number(tournamentForm.sidInvestment) || 0
+    );
     loadData();
     setShowNewTournamentModal(false);
-    setTournamentForm({ name: '', club: 'Velocity', date: '' });
+    setTournamentForm({ name: '', club: 'Velocity', date: '', sidInvestment: '' });
     setActiveTab(TABS.EXPENSES);
   }, [tournamentForm, loadData]);
 
@@ -131,32 +134,12 @@ function App() {
 
     const note = expenseForm.note?.trim() || undefined;
 
-    if (expenseForm.paidBy === 'SPLIT') {
-      const sidPercent = Number(expenseForm.splitSidPercent) || 50;
-      const sidAmount = Number((amount * sidPercent / 100).toFixed(2));
-      const vishAmount = Number((amount - sidAmount).toFixed(2));
-
-      storage.addExpense(currentTournament.id, {
-        category: expenseForm.category,
-        amount: sidAmount,
-        paidBy: 'SID',
-        note: note ? `${note} (Split ${sidPercent}% / ${100 - sidPercent}%)` : `Split ${sidPercent}% / ${100 - sidPercent}%`
-      });
-
-      storage.addExpense(currentTournament.id, {
-        category: expenseForm.category,
-        amount: vishAmount,
-        paidBy: 'VISH',
-        note: note ? `${note} (Split ${sidPercent}% / ${100 - sidPercent}%)` : `Split ${sidPercent}% / ${100 - sidPercent}%`
-      });
-    } else {
-      storage.addExpense(currentTournament.id, {
-        category: expenseForm.category,
-        amount,
-        paidBy: expenseForm.paidBy,
-        note
-      });
-    }
+    storage.addExpense(currentTournament.id, {
+      category: expenseForm.category,
+      amount,
+      paidBy: 'VISH',
+      note
+    });
 
     loadData();
     setExpenseForm((prev) => ({ ...prev, amount: '', note: '' }));
@@ -189,7 +172,7 @@ function App() {
   }, [currentTournament, loadData]);
 
   const financialSnapshot = useMemo(() => buildTournamentFinancialSnapshot(currentTournament), [currentTournament]);
-  const { expenseTotals, collectionTotals, split, categoryEntries, highestCategory, aiContext } = financialSnapshot;
+  const { expenseTotals, collectionTotals, split, aiContext } = financialSnapshot;
 
   const handleAnalyzeTournament = useCallback(async () => {
     if (!currentTournament) return;
@@ -307,6 +290,19 @@ function App() {
             onChange={(e) => handleUpdateTournament('date', e.target.value)}
           />
         </div>
+
+        <div className="form-group">
+          <label className="form-label">Siddharth Investment</label>
+          <div className="amount-input-wrapper">
+            <input
+              type="number"
+              className="form-input amount-input"
+              placeholder="0"
+              value={currentTournament?.sidInvestment || ''}
+              onChange={(e) => handleUpdateTournament('sidInvestment', Number(e.target.value) || 0)}
+            />
+          </div>
+        </div>
       </div>
 
       {currentTournament && (
@@ -360,36 +356,13 @@ function App() {
           
           <div className="form-group">
             <label className="form-label">Paid By</label>
-            <div className="pill-group">
-              {['SID', 'VISH', 'SPLIT'].map(payer => (
-                <button
-                  key={payer}
-                  type="button"
-                  className={`pill-btn ${expenseForm.paidBy === payer ? (payer === 'VISH' ? 'active-secondary' : 'active') : ''}`}
-                  onClick={() => setExpenseForm({ ...expenseForm, paidBy: payer })}
-                >
-                  {payer}
-                </button>
-              ))}
-            </div>
+            <input
+              type="text"
+              className="form-input"
+              value="VISH (from collections)"
+              disabled
+            />
           </div>
-
-          {expenseForm.paidBy === 'SPLIT' && (
-            <div className="form-group">
-              <label className="form-label">SID Split %</label>
-              <input
-                type="number"
-                min="0"
-                max="100"
-                className="form-input"
-                value={expenseForm.splitSidPercent}
-                onChange={(e) => setExpenseForm({ ...expenseForm, splitSidPercent: e.target.value })}
-              />
-              <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 6 }}>
-                VISH gets {Math.max(0, 100 - (Number(expenseForm.splitSidPercent) || 0))}%
-              </p>
-            </div>
-          )}
 
           <div className="form-group">
             <label className="form-label">Note (optional)</label>
@@ -423,7 +396,6 @@ function App() {
                 <div className="list-item-icon">{getCategoryIcon(expense.category)}</div>
                 <div className="list-item-details">
                   <div className="list-item-title">{expense.category}</div>
-                  <span className={`badge badge-${String(expense.paidBy || '').toLowerCase()}`}>{expense.paidBy}</span>
                   {expense.note && <div className="list-item-subtitle">{expense.note}</div>}
                 </div>
               </div>
@@ -539,60 +511,26 @@ function App() {
       <div className="summary-grid">
         <div className="summary-card">
           <div className="summary-card-label">Total Collection</div>
-          <div className="summary-card-value positive">{formatCurrency(collectionTotals.totalIncome)}</div>
-        </div>
-        
-        <div className="summary-card">
-          <div className="summary-card-label">Total Refunds</div>
-          <div className="summary-card-value negative">{formatCurrency(collectionTotals.totalRefunds)}</div>
-        </div>
-        
-        <div className="summary-card">
-          <div className="summary-card-label">Net Collection</div>
           <div className="summary-card-value positive">{formatCurrency(collectionTotals.netCollection)}</div>
         </div>
-        
+
         <div className="summary-card">
           <div className="summary-card-label">Total Expenses</div>
           <div className="summary-card-value negative">{formatCurrency(expenseTotals.totalExpenses)}</div>
         </div>
-        
+
         <div className="summary-card">
-          <div className="summary-card-label">Profit / Loss</div>
+          <div className="summary-card-label">Profit</div>
           <div className={`summary-card-value ${split.isProfit ? 'positive' : 'negative'}`}>
-            {split.isProfit ? '+' : ''}{formatCurrency(split.profit)}
+            {formatCurrency(split.profit)}
           </div>
         </div>
 
         <div className="summary-card settlement-card">
-          <div className="summary-card-label">Final Settlement</div>
-          <div className="settlement-text">SID invested: {formatCurrency(expenseTotals.sidInvestment)}</div>
-          <div className="settlement-text">VISH invested: {formatCurrency(expenseTotals.vishInvestment)}</div>
-          <div className="settlement-text" style={{ marginTop: 8 }}>Total Profit: {formatCurrency(split.profit)}</div>
-          <div className="settlement-text" style={{ marginTop: 8 }}>SID should receive: {formatCurrency(split.sidFinal)}</div>
-          <div className="settlement-text">VISH should receive: {formatCurrency(split.vishFinal)}</div>
-          <div className="settlement-highlight">{split.settlement.message}</div>
-        </div>
-
-        <div className="summary-card">
-          <div className="summary-card-label">Category Analytics</div>
-          <div className="category-pie" style={{
-            background: `conic-gradient(
-              #FFC107 0deg ${Math.round((categoryEntries[0]?.percent || 0) * 3.6)}deg,
-              #28A745 ${Math.round((categoryEntries[0]?.percent || 0) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0)) * 3.6)}deg,
-              #17A2B8 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0)) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0)) * 3.6)}deg,
-              #DC3545 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0)) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0) + (categoryEntries[3]?.percent || 0)) * 3.6)}deg,
-              #666666 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0) + (categoryEntries[3]?.percent || 0)) * 3.6)}deg 360deg
-            )`
-          }} />
-          <p className="settlement-text" style={{ marginTop: 12 }}>
-            Highest: {highestCategory.label} ({formatCurrency(highestCategory.amount)} • {highestCategory.percent}%)
-          </p>
-          <div className="summary-card-breakdown">
-            {categoryEntries.filter(item => item.amount > 0).slice(0, 5).map(item => (
-              <span key={item.key}>{item.label}: {item.percent}%</span>
-            ))}
-          </div>
+          <div className="summary-card-label">Settlement</div>
+          <div className="settlement-text">Siddharth invested: {formatCurrency(currentTournament?.sidInvestment || 0)}</div>
+          <div className="settlement-text">Profit share (each): {formatCurrency(split.profitShareEach)}</div>
+          <div className="settlement-highlight">Vishwesh should pay Siddharth {formatCurrency(split.amountVishweshPaysSiddharth)}</div>
         </div>
 
         <div className="summary-card">
@@ -608,7 +546,7 @@ function App() {
           )}
         </div>
       </div>
-      
+
       <button className="btn mt-4" onClick={() => setShowBillModal(true)}>
         <Printer size={18} style={{ marginRight: 8 }} />
         Generate Bill
@@ -618,10 +556,7 @@ function App() {
 
   const renderBill = () => {
     if (!currentTournament) return null;
-    
-    const incomeCollections = currentTournament.collections?.filter(c => !c.isRefund) || [];
-    const refundCollections = currentTournament.collections?.filter(c => c.isRefund) || [];
-    
+
     return (
       <div className="bill">
         <div className="bill-header">
@@ -637,91 +572,46 @@ function App() {
             {currentTournament.club} Badminton • {formatDate(currentTournament.date)}
           </p>
         </div>
-        
+
         <div className="bill-section">
-          <h4 className="bill-section-title">Expenses</h4>
+          <h4 className="bill-section-title">Tournament Name</h4>
           <div className="bill-table">
-            {currentTournament.expenses.length === 0 ? (
-              <div className="bill-row">
-                <span className="bill-row-label">No expenses</span>
-              </div>
-            ) : (
-              currentTournament.expenses.map(expense => (
-                <div key={expense.id} className="bill-row">
-                  <span className="bill-row-label">{expense.category} ({expense.paidBy})</span>
-                  <span className="bill-row-value" style={{ color: 'var(--danger)' }}>-{formatCurrency(expense.amount)}</span>
-                </div>
-              ))
-            )}
-            <div className="bill-total">
-              <span>Total Expenses</span>
-              <span style={{ color: 'var(--danger)' }}>-{formatCurrency(expenseTotals.totalExpenses)}</span>
-            </div>
-          </div>
-        </div>
-        
-        <div className="bill-section">
-          <h4 className="bill-section-title">Collections</h4>
-          <div className="bill-table">
-            {incomeCollections.length === 0 ? (
-              <div className="bill-row">
-                <span className="bill-row-label">No income</span>
-              </div>
-            ) : (
-              incomeCollections.map(collection => (
-                <div key={collection.id} className="bill-row">
-                  <span className="bill-row-label">{collection.source}</span>
-                  <span className="bill-row-value" style={{ color: 'var(--accent-primary)' }}>+{formatCurrency(collection.amount)}</span>
-                </div>
-              ))
-            )}
-            <div className="bill-total">
-              <span>Total Income</span>
-              <span style={{ color: 'var(--accent-primary)' }}>+{formatCurrency(collectionTotals.totalIncome)}</span>
+            <div className="bill-row">
+              <span className="bill-row-label">Name</span>
+              <span className="bill-row-value">{currentTournament.name}</span>
             </div>
           </div>
         </div>
 
-        {refundCollections.length > 0 && (
-          <div className="bill-section">
-            <h4 className="bill-section-title">Refunds</h4>
-            <div className="bill-table">
-              {refundCollections.map(collection => (
-                <div key={collection.id} className="bill-row">
-                  <span className="bill-row-label">{collection.source}</span>
-                  <span className="bill-row-value" style={{ color: 'var(--danger)' }}>-{formatCurrency(collection.amount)}</span>
-                </div>
-              ))}
-              <div className="bill-total">
-                <span>Total Refunds</span>
-                <span style={{ color: 'var(--danger)' }}>-{formatCurrency(collectionTotals.totalRefunds)}</span>
-              </div>
+        <div className="bill-section">
+          <h4 className="bill-section-title">Date</h4>
+          <div className="bill-table">
+            <div className="bill-row">
+              <span className="bill-row-label">Date</span>
+              <span className="bill-row-value">{formatDate(currentTournament.date)}</span>
             </div>
           </div>
-        )}
-        
+        </div>
+
         <div className="bill-section">
           <div className="bill-total">
-            <span>Net Collection</span>
-            <span>{formatCurrency(collectionTotals.netCollection)}</span>
+            <span>Total Collection</span>
+            <span style={{ color: 'var(--accent-primary)' }}>{formatCurrency(collectionTotals.netCollection)}</span>
           </div>
         </div>
-        
+
+        <div className="bill-section">
+          <div className="bill-total">
+            <span>Total Expenses</span>
+            <span style={{ color: 'var(--danger)' }}>{formatCurrency(expenseTotals.totalExpenses)}</span>
+          </div>
+        </div>
+
         <div className="bill-section">
           <div className="bill-total">
             <span>Profit</span>
-            <span style={{ color: split.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>
-              {split.isProfit ? '+' : ''}{formatCurrency(split.profit)}
-            </span>
+            <span style={{ color: split.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>{formatCurrency(split.profit)}</span>
           </div>
-        </div>
-        
-        <div className="bill-settlement">
-          <div className="bill-settlement-label">Final Settlement</div>
-          <div className="bill-settlement-value">
-            SID receives: {formatCurrency(split.sidFinal)} | VISH receives: {formatCurrency(split.vishFinal)}
-          </div>
-          <div className="bill-settlement-label" style={{ marginTop: 8 }}>{split.settlement.message}</div>
         </div>
       </div>
     );
@@ -879,6 +769,19 @@ function App() {
                     onChange={(e) => setTournamentForm({ ...tournamentForm, date: e.target.value })}
                     required
                   />
+                </div>
+
+                <div className="form-group">
+                  <label className="form-label">Siddharth Investment</label>
+                  <div className="amount-input-wrapper">
+                    <input
+                      type="number"
+                      className="form-input amount-input"
+                      placeholder="0"
+                      value={tournamentForm.sidInvestment}
+                      onChange={(e) => setTournamentForm({ ...tournamentForm, sidInvestment: e.target.value })}
+                    />
+                  </div>
                 </div>
               </div>
               <div className="modal-footer">
