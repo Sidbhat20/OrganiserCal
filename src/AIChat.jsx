@@ -1,7 +1,9 @@
 import { useState, useRef, useEffect } from 'react';
 import { MessageCircle, Send } from 'lucide-react';
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(/\/$/, '');
+const API_BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL || (import.meta.env.DEV ? 'http://localhost:3001' : '')
+).replace(/\/$/, '');
 
 const formatInlineText = (text) => {
   const segments = String(text || '').split(/(\*\*[^*]+\*\*)/g).filter(Boolean);
