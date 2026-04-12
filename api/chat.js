@@ -29,58 +29,89 @@ export default async function handler(req, res) {
       return;
     }
 
-    const commonHeaders = {
-      'Content-Type': 'application/json',
-      'api-key': apiKey
-    };
+    const baseMessages = [
+      { role: 'system', content: context },
+      ...messages
+    ];
 
-    const deploymentUrl = `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`;
-    const deploymentPayload = {
-      messages: [
-        { role: 'system', content: context },
-        ...messages
-      ],
-      max_completion_tokens: 500,
-      temperature: 0.7
-    };
+    const candidates = [
+      {
+        label: 'azure-openai-deployment',
+        url: `${endpoint}/openai/deployments/${deployment}/chat/completions?api-version=${apiVersion}`,
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey
+        },
+        payload: {
+          messages: baseMessages,
+          max_completion_tokens: 500,
+          temperature: 0.7
+        }
+      },
+      {
+        label: 'azure-foundry-models',
+        url: `${endpoint}/models/chat/completions?api-version=${apiVersion}`,
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey
+        },
+        payload: {
+          model: modelName,
+          messages: baseMessages,
+          max_tokens: 500,
+          temperature: 0.7
+        }
+      },
+      {
+        label: 'azure-openai-v1',
+        url: `${endpoint}/openai/v1/chat/completions`,
+        headers: {
+          'Content-Type': 'application/json',
+          'api-key': apiKey,
+          Authorization: `Bearer ${apiKey}`
+        },
+        payload: {
+          model: modelName,
+          messages: baseMessages,
+          max_tokens: 500,
+          temperature: 0.7
+        }
+      }
+    ];
 
-    let response = await fetch(deploymentUrl, {
-      method: 'POST',
-      headers: commonHeaders,
-      body: JSON.stringify(deploymentPayload)
-    });
+    let data = null;
+    const attemptErrors = [];
 
-    // Fallback for Azure AI Foundry style endpoint where model is passed in body.
-    if (!response.ok && response.status === 404) {
-      const modelUrl = `${endpoint}/models/chat/completions?api-version=${apiVersion}`;
-      const modelPayload = {
-        model: modelName,
-        messages: [
-          { role: 'system', content: context },
-          ...messages
-        ],
-        max_tokens: 500,
-        temperature: 0.7
-      };
-
-      response = await fetch(modelUrl, {
+    for (const candidate of candidates) {
+      const response = await fetch(candidate.url, {
         method: 'POST',
-        headers: commonHeaders,
-        body: JSON.stringify(modelPayload)
+        headers: candidate.headers,
+        body: JSON.stringify(candidate.payload)
+      });
+
+      if (response.ok) {
+        data = await response.json();
+        break;
+      }
+
+      const details = await response.text();
+      attemptErrors.push({
+        route: candidate.label,
+        status: response.status,
+        details
       });
     }
 
-    if (!response.ok) {
-      const details = await response.text();
-      res.status(response.status).json({
-        error: `Azure OpenAI API error: ${response.status}`,
-        details,
-        hint: 'Check AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_DEPLOYMENT or AZURE_OPENAI_MODEL in Vercel.'
+    if (!data) {
+      const all404 = attemptErrors.length > 0 && attemptErrors.every((e) => e.status === 404);
+      res.status(all404 ? 404 : 502).json({
+        error: all404 ? 'Azure OpenAI API error: 404 Resource not found' : 'Azure OpenAI API request failed',
+        attempts: attemptErrors,
+        hint: 'Endpoint/key may be valid but deployment or model does not exist on that Azure resource. Verify AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_DEPLOYMENT (deployment id), AZURE_OPENAI_MODEL, and API version in Vercel Production env.'
       });
       return;
     }
 
-    const data = await response.json();
     const reply = data?.choices?.[0]?.message?.content;
 
     if (!reply) {
