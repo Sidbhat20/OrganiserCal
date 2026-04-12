@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { 
   Settings, 
   Receipt, 
@@ -7,18 +7,20 @@ import {
   Plus, 
   X, 
   Trash2,
-  Printer
+  Printer,
+  Sparkles
 } from 'lucide-react';
 import * as storage from './utils/storage';
+import AIChat from './AIChat';
 import { 
   formatCurrency, 
   formatDate, 
-  calculateExpenseTotals, 
-  calculateCollectionTotals, 
-  calculateProfitAndSplit,
+  buildTournamentFinancialSnapshot,
   getCategoryIcon,
   getSourceIcon
 } from './utils/helpers';
+
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || 'http://localhost:3001').replace(/\/$/, '');
 
 // Tab names
 const TABS = {
@@ -56,13 +58,17 @@ function App() {
   
   // Form states
   const [tournamentForm, setTournamentForm] = useState({ name: '', club: 'Velocity', date: '' });
-  const [expenseForm, setExpenseForm] = useState({ category: 'Court', amount: '', paidBy: 'Sid' });
+  const [expenseForm, setExpenseForm] = useState({
+    category: 'Court',
+    amount: '',
+    paidBy: 'SID',
+    splitSidPercent: 50,
+    note: ''
+  });
   const [collectionForm, setCollectionForm] = useState({ source: 'PlayMatches', amount: '', isRefund: false });
-
-  // Load data on mount
-  useEffect(() => {
-    loadData();
-  }, []);
+  const [aiAnalysis, setAiAnalysis] = useState('');
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const billContentRef = useRef(null);
 
   const loadData = useCallback(() => {
     const allTournaments = storage.getAllTournaments();
@@ -70,6 +76,16 @@ function App() {
     const current = storage.getCurrentTournament();
     setCurrentTournament(current);
   }, []);
+
+  // Load data on mount
+  useEffect(() => {
+    const bootstrap = async () => {
+      await storage.initSupabaseSync();
+      loadData();
+    };
+
+    bootstrap();
+  }, [loadData]);
 
   // Tournament handlers
   const handleCreateTournament = useCallback((e) => {
@@ -107,14 +123,41 @@ function App() {
   const handleAddExpense = useCallback((e) => {
     e.preventDefault();
     if (!expenseForm.amount || !currentTournament) return;
-    
-    storage.addExpense(currentTournament.id, {
-      category: expenseForm.category,
-      amount: parseFloat(expenseForm.amount),
-      paidBy: expenseForm.paidBy
-    });
+
+    const amount = Number(expenseForm.amount);
+    if (!amount || amount <= 0) return;
+
+    const note = expenseForm.note?.trim() || undefined;
+
+    if (expenseForm.paidBy === 'SPLIT') {
+      const sidPercent = Number(expenseForm.splitSidPercent) || 50;
+      const sidAmount = Number((amount * sidPercent / 100).toFixed(2));
+      const vishAmount = Number((amount - sidAmount).toFixed(2));
+
+      storage.addExpense(currentTournament.id, {
+        category: expenseForm.category,
+        amount: sidAmount,
+        paidBy: 'SID',
+        note: note ? `${note} (Split ${sidPercent}% / ${100 - sidPercent}%)` : `Split ${sidPercent}% / ${100 - sidPercent}%`
+      });
+
+      storage.addExpense(currentTournament.id, {
+        category: expenseForm.category,
+        amount: vishAmount,
+        paidBy: 'VISH',
+        note: note ? `${note} (Split ${sidPercent}% / ${100 - sidPercent}%)` : `Split ${sidPercent}% / ${100 - sidPercent}%`
+      });
+    } else {
+      storage.addExpense(currentTournament.id, {
+        category: expenseForm.category,
+        amount,
+        paidBy: expenseForm.paidBy,
+        note
+      });
+    }
+
     loadData();
-    setExpenseForm({ category: expenseForm.category, amount: '', paidBy: expenseForm.paidBy });
+    setExpenseForm((prev) => ({ ...prev, amount: '', note: '' }));
   }, [expenseForm, currentTournament, loadData]);
 
   const handleDeleteExpense = useCallback((expenseId) => {
@@ -143,22 +186,63 @@ function App() {
     loadData();
   }, [currentTournament, loadData]);
 
-  // Memoized calculations
-  const expenseTotals = useMemo(() => {
-    return currentTournament ? calculateExpenseTotals(currentTournament.expenses) : { totalExpenses: 0 };
-  }, [currentTournament?.expenses]);
+  const financialSnapshot = useMemo(() => buildTournamentFinancialSnapshot(currentTournament), [currentTournament]);
+  const { expenseTotals, collectionTotals, split, categoryEntries, highestCategory, aiContext } = financialSnapshot;
 
-  const collectionTotals = useMemo(() => {
-    return currentTournament ? calculateCollectionTotals(currentTournament.collections) : { totalIncome: 0, totalRefunds: 0, netCollection: 0 };
-  }, [currentTournament?.collections]);
+  const handleAnalyzeTournament = useCallback(async () => {
+    if (!currentTournament) return;
 
-  const profitData = useMemo(() => {
-    return calculateProfitAndSplit(
-      collectionTotals.totalIncome, 
-      collectionTotals.totalRefunds, 
-      expenseTotals.totalExpenses
-    );
-  }, [collectionTotals, expenseTotals]);
+    setAnalysisLoading(true);
+    setAiAnalysis('');
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          context: `You are a financial assistant for badminton tournament organizers. You analyze expenses, collections, and profit. Give clear, short, data-driven insights. Avoid generic advice. Use INR currency and include exact numbers and percentages from provided data.\n\nTournament Financial Context:\n${JSON.stringify(aiContext, null, 2)}`,
+          messages: [
+            {
+              role: 'user',
+              content: 'Analyze tournament and provide: 1) overspending areas, 2) highest expense category, 3) profit margin analysis, 4) top 3 improvement suggestions with numbers.'
+            }
+          ]
+        })
+      });
+
+      if (!response.ok) {
+        const payload = await response.json();
+        throw new Error(payload.error || `HTTP ${response.status}`);
+      }
+
+      const data = await response.json();
+      setAiAnalysis(data.response || 'No analysis generated.');
+    } catch (error) {
+      setAiAnalysis(`Analysis error: ${error.message}`);
+    } finally {
+      setAnalysisLoading(false);
+    }
+  }, [currentTournament, aiContext]);
+
+  const handleDownloadPdf = useCallback(async () => {
+    if (!billContentRef.current || !currentTournament) return;
+
+    const html2pdf = (await import('html2pdf.js')).default;
+    const safeName = (currentTournament.name || 'tournament-summary').replace(/[^a-z0-9-_ ]/gi, '').trim() || 'tournament-summary';
+
+    await html2pdf()
+      .set({
+        margin: 10,
+        filename: `${safeName}-summary.pdf`,
+        image: { type: 'jpeg', quality: 0.98 },
+        html2canvas: { scale: 2, useCORS: true },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+      })
+      .from(billContentRef.current)
+      .save();
+  }, [currentTournament]);
 
   // Render functions
   const renderEmptyState = () => (
@@ -275,17 +359,45 @@ function App() {
           <div className="form-group">
             <label className="form-label">Paid By</label>
             <div className="pill-group">
-              {['Sid', 'Vish', 'Both'].map(payer => (
+              {['SID', 'VISH', 'SPLIT'].map(payer => (
                 <button
                   key={payer}
                   type="button"
-                  className={`pill-btn ${expenseForm.paidBy === payer ? (payer === 'Sid' ? 'active' : payer === 'Vish' ? 'active-secondary' : 'active') : ''}`}
+                  className={`pill-btn ${expenseForm.paidBy === payer ? (payer === 'VISH' ? 'active-secondary' : 'active') : ''}`}
                   onClick={() => setExpenseForm({ ...expenseForm, paidBy: payer })}
                 >
                   {payer}
                 </button>
               ))}
             </div>
+          </div>
+
+          {expenseForm.paidBy === 'SPLIT' && (
+            <div className="form-group">
+              <label className="form-label">SID Split %</label>
+              <input
+                type="number"
+                min="0"
+                max="100"
+                className="form-input"
+                value={expenseForm.splitSidPercent}
+                onChange={(e) => setExpenseForm({ ...expenseForm, splitSidPercent: e.target.value })}
+              />
+              <p style={{ color: 'var(--text-muted)', fontSize: 12, marginTop: 6 }}>
+                VISH gets {Math.max(0, 100 - (Number(expenseForm.splitSidPercent) || 0))}%
+              </p>
+            </div>
+          )}
+
+          <div className="form-group">
+            <label className="form-label">Note (optional)</label>
+            <input
+              type="text"
+              className="form-input"
+              placeholder="e.g., Shuttle box for finals"
+              value={expenseForm.note}
+              onChange={(e) => setExpenseForm({ ...expenseForm, note: e.target.value })}
+            />
           </div>
           
           <button type="submit" className="btn">Add Expense</button>
@@ -309,7 +421,8 @@ function App() {
                 <div className="list-item-icon">{getCategoryIcon(expense.category)}</div>
                 <div className="list-item-details">
                   <div className="list-item-title">{expense.category}</div>
-                  <span className={`badge badge-${expense.paidBy?.toLowerCase()}`}>{expense.paidBy}</span>
+                  <span className={`badge badge-${String(expense.paidBy || '').toLowerCase()}`}>{expense.paidBy}</span>
+                  {expense.note && <div className="list-item-subtitle">{expense.note}</div>}
                 </div>
               </div>
               <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -444,17 +557,53 @@ function App() {
         
         <div className="summary-card">
           <div className="summary-card-label">Profit / Loss</div>
-          <div className={`summary-card-value ${profitData.isProfit ? 'positive' : 'negative'}`}>
-            {profitData.isProfit ? '+' : ''}{formatCurrency(profitData.profit)}
+          <div className={`summary-card-value ${split.isProfit ? 'positive' : 'negative'}`}>
+            {split.isProfit ? '+' : ''}{formatCurrency(split.profit)}
           </div>
         </div>
-        
+
         <div className="summary-card settlement-card">
-          <div className="summary-card-label">Each Person's Share</div>
-          <div className="settlement-text">Sid gets</div>
-          <div className="settlement-amount">{formatCurrency(profitData.eachShare)}</div>
-          <div className="settlement-text" style={{ marginTop: 8 }}>Vish gets</div>
-          <div className="settlement-amount">{formatCurrency(profitData.eachShare)}</div>
+          <div className="summary-card-label">Final Settlement</div>
+          <div className="settlement-text">SID invested: {formatCurrency(expenseTotals.sidInvestment)}</div>
+          <div className="settlement-text">VISH invested: {formatCurrency(expenseTotals.vishInvestment)}</div>
+          <div className="settlement-text" style={{ marginTop: 8 }}>Total Profit: {formatCurrency(split.profit)}</div>
+          <div className="settlement-text" style={{ marginTop: 8 }}>SID should receive: {formatCurrency(split.sidFinal)}</div>
+          <div className="settlement-text">VISH should receive: {formatCurrency(split.vishFinal)}</div>
+          <div className="settlement-highlight">{split.settlement.message}</div>
+        </div>
+
+        <div className="summary-card">
+          <div className="summary-card-label">Category Analytics</div>
+          <div className="category-pie" style={{
+            background: `conic-gradient(
+              #FFC107 0deg ${Math.round((categoryEntries[0]?.percent || 0) * 3.6)}deg,
+              #28A745 ${Math.round((categoryEntries[0]?.percent || 0) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0)) * 3.6)}deg,
+              #17A2B8 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0)) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0)) * 3.6)}deg,
+              #DC3545 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0)) * 3.6)}deg ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0) + (categoryEntries[3]?.percent || 0)) * 3.6)}deg,
+              #666666 ${Math.round(((categoryEntries[0]?.percent || 0) + (categoryEntries[1]?.percent || 0) + (categoryEntries[2]?.percent || 0) + (categoryEntries[3]?.percent || 0)) * 3.6)}deg 360deg
+            )`
+          }} />
+          <p className="settlement-text" style={{ marginTop: 12 }}>
+            Highest: {highestCategory.label} ({formatCurrency(highestCategory.amount)} • {highestCategory.percent}%)
+          </p>
+          <div className="summary-card-breakdown">
+            {categoryEntries.filter(item => item.amount > 0).slice(0, 5).map(item => (
+              <span key={item.key}>{item.label}: {item.percent}%</span>
+            ))}
+          </div>
+        </div>
+
+        <div className="summary-card">
+          <div className="summary-card-label">AI Insights</div>
+          <button className="btn" onClick={handleAnalyzeTournament} disabled={analysisLoading}>
+            <Sparkles size={16} style={{ marginRight: 8 }} />
+            {analysisLoading ? 'Analyzing...' : 'Analyze Tournament'}
+          </button>
+          {aiAnalysis && (
+            <div className="ai-analysis-box">
+              {aiAnalysis}
+            </div>
+          )}
         </div>
       </div>
       
@@ -559,17 +708,18 @@ function App() {
         <div className="bill-section">
           <div className="bill-total">
             <span>Profit</span>
-            <span style={{ color: profitData.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>
-              {profitData.isProfit ? '+' : ''}{formatCurrency(profitData.profit)}
+            <span style={{ color: split.isProfit ? 'var(--accent-primary)' : 'var(--danger)' }}>
+              {split.isProfit ? '+' : ''}{formatCurrency(split.profit)}
             </span>
           </div>
         </div>
         
         <div className="bill-settlement">
-          <div className="bill-settlement-label">Each Person's Share</div>
+          <div className="bill-settlement-label">Final Settlement</div>
           <div className="bill-settlement-value">
-            Sid: {formatCurrency(profitData.eachShare)} | Vish: {formatCurrency(profitData.eachShare)}
+            SID receives: {formatCurrency(split.sidFinal)} | VISH receives: {formatCurrency(split.vishFinal)}
           </div>
+          <div className="bill-settlement-label" style={{ marginTop: 8 }}>{split.settlement.message}</div>
         </div>
       </div>
     );
@@ -589,26 +739,28 @@ function App() {
               />
             )}
             {!currentTournament?.club && <span className="shuttle-icon">🏸</span>}
-            <h1>Badminton Expense</h1>
+            <h1>Baddy Cal</h1>
           </div>
-          
-          {tournaments.length > 0 && (
-            <select 
-              className="tournament-select"
-              value={currentTournament?.id || ''}
-              onChange={handleSelectTournament}
-            >
-              <option value="" disabled>Select Tournament</option>
-              {tournaments.map(t => (
-                <option key={t.id} value={t.id}>{t.name}</option>
-              ))}
-            </select>
-          )}
-          
-          <button className="btn-new" onClick={() => setShowNewTournamentModal(true)}>
-            <Plus size={18} />
-            New
-          </button>
+
+          <div className="header-actions">
+            {tournaments.length > 0 && (
+              <select 
+                className="tournament-select"
+                value={currentTournament?.id || ''}
+                onChange={handleSelectTournament}
+              >
+                <option value="" disabled>Select Tournament</option>
+                {tournaments.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            )}
+
+            <button className="btn-new" onClick={() => setShowNewTournamentModal(true)}>
+              <Plus size={18} />
+              New
+            </button>
+          </div>
         </div>
       </header>
 
@@ -751,11 +903,14 @@ function App() {
               </button>
             </div>
             <div className="modal-body">
-              {renderBill()}
+              <div ref={billContentRef}>{renderBill()}</div>
             </div>
             <div className="modal-footer">
               <button className="btn btn-secondary" onClick={() => setShowBillModal(false)}>
                 Close
+              </button>
+              <button className="btn btn-secondary" onClick={handleDownloadPdf}>
+                Download PDF
               </button>
               <button className="btn" onClick={() => window.print()}>
                 <Printer size={18} style={{ marginRight: 8 }} />
@@ -765,6 +920,9 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* AI Chat Widget */}
+      <AIChat currentTournament={currentTournament} financialContext={aiContext} />
     </div>
   );
 }
