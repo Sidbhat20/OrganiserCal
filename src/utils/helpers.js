@@ -1,11 +1,10 @@
-// Format number as Indian Rupees
 export const formatCurrency = (amount) => {
   const num = Number(amount) || 0;
   return new Intl.NumberFormat('en-IN', {
     style: 'currency',
     currency: 'INR',
     minimumFractionDigits: 0,
-    maximumFractionDigits: 0
+    maximumFractionDigits: 0,
   }).format(num);
 };
 
@@ -17,6 +16,10 @@ const CATEGORY_KEYS = {
   Referee: 'referee',
   Food: 'food',
   Medals: 'medals',
+  Medal: 'medals',
+  Trophy: 'trophy',
+  Certificate: 'certificate',
+  Criteria: 'criteria',
 };
 
 const normalizePayer = (paidBy) => {
@@ -27,18 +30,28 @@ const normalizePayer = (paidBy) => {
   return 'VISH';
 };
 
-// Format date for display
 export const formatDate = (dateString) => {
   if (!dateString) return '';
   const date = new Date(dateString);
   return date.toLocaleDateString('en-IN', {
     day: '2-digit',
     month: 'short',
-    year: 'numeric'
+    year: 'numeric',
   });
 };
 
-// Calculate expense totals with payer and category analytics.
+export const formatDateTime = (dateString) => {
+  if (!dateString) return '';
+  const date = new Date(dateString);
+  return date.toLocaleString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
 export const calculateExpenseTotals = (expenses = []) => {
   const totals = {
     totalExpenses: 0,
@@ -50,6 +63,9 @@ export const calculateExpenseTotals = (expenses = []) => {
       referee: 0,
       food: 0,
       medals: 0,
+      trophy: 0,
+      certificate: 0,
+      criteria: 0,
       others: 0,
     },
   };
@@ -97,12 +113,11 @@ export const calculateExpenseTotals = (expenses = []) => {
   return totals;
 };
 
-// Calculate collection totals - now separated from refunds
 export const calculateCollectionTotals = (collections = []) => {
   let totalIncome = 0;
   let totalRefunds = 0;
-  
-  collections.forEach(collection => {
+
+  collections.forEach((collection) => {
     const amount = Number(collection.amount) || 0;
     if (collection.isRefund) {
       totalRefunds += amount;
@@ -110,7 +125,7 @@ export const calculateCollectionTotals = (collections = []) => {
       totalIncome += amount;
     }
   });
-  
+
   const netCollection = totalIncome - totalRefunds;
   return { totalIncome, totalRefunds, netCollection };
 };
@@ -194,9 +209,7 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
       key,
       label: key.charAt(0).toUpperCase() + key.slice(1),
       amount,
-      percent: expenseTotals.totalExpenses > 0
-        ? roundTo2((amount / expenseTotals.totalExpenses) * 100)
-        : 0,
+      percent: expenseTotals.totalExpenses > 0 ? roundTo2((amount / expenseTotals.totalExpenses) * 100) : 0,
     }))
     .sort((a, b) => b.amount - a.amount);
 
@@ -238,34 +251,32 @@ export const buildTournamentFinancialSnapshot = (tournament) => {
   };
 };
 
-// Category icons mapping
 export const getCategoryIcon = (category) => {
   const icons = {
-    'Court': '🏸',
-    'Referee': '👨‍⚖️',
-    'Shuttle': '🎯',
-    'Food': '🍕',
-    'Medals': '🥇',
-    'Trophy': '🏆',
-    'Medal': '🥇',
-    'Certificate': '📜',
-    'Bhaiya': '👤',
-    'Other': '📦'
+    Court: '🏸',
+    Referee: '👨‍⚖️',
+    Shuttle: '🎯',
+    Food: '🍕',
+    Medals: '🥇',
+    Medal: '🥇',
+    Trophy: '🏆',
+    Certificate: '📜',
+    Criteria: '📝',
+    Bhaiya: '👤',
+    Other: '📦',
   };
   return icons[category] || '📦';
 };
 
-// Source icons mapping
 export const getSourceIcon = (source) => {
   const icons = {
-    'PlayMatches': '🎮',
-    'UPI': '📱',
-    'Cash': '💵'
+    PlayMatches: '🎮',
+    UPI: '📱',
+    Cash: '💵',
   };
   return icons[source] || '💰';
 };
 
-// Club colors
 export const getClubColor = (club) => {
   return club === 'Velocity' ? '#22c55e' : '#f59e0b';
 };

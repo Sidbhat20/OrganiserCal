@@ -1,31 +1,95 @@
 import { isSupabaseEnabled, pullRemoteState, pushRemoteState } from './supabaseClient';
 
-// Storage keys
 const STORAGE_KEY = 'badminton_expense_calculator';
 const CLOUD_SYNC_THROTTLE_MS = 800;
+const PROFILE_IDS = ['SID', 'VISH'];
+const SUMMARY_HISTORY_LIMIT = 50;
 let cloudSyncTimer = null;
 
-// Generate unique ID
-export const generateId = () => {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2);
+const createEmptyProfileState = () => ({
+  tournaments: [],
+  currentTournamentId: null,
+  updatedAt: null,
+});
+
+const createDefaultAppState = () => ({
+  profiles: {
+    SID: createEmptyProfileState(),
+    VISH: createEmptyProfileState(),
+  },
+  currentProfileId: null,
+  updatedAt: null,
+});
+
+const normalizeProfileId = (value) => {
+  const id = String(value || '').trim().toUpperCase();
+  return PROFILE_IDS.includes(id) ? id : null;
 };
 
-// Get all data from localStorage
-export const getStorageData = () => {
+const normalizeTournament = (tournament = {}) => ({
+  ...tournament,
+  expenses: Array.isArray(tournament.expenses) ? tournament.expenses : [],
+  collections: Array.isArray(tournament.collections) ? tournament.collections : [],
+  summaryHistory: Array.isArray(tournament.summaryHistory) ? tournament.summaryHistory : [],
+});
+
+const normalizeProfileState = (profile = {}) => ({
+  tournaments: Array.isArray(profile.tournaments) ? profile.tournaments.map(normalizeTournament) : [],
+  currentTournamentId: profile.currentTournamentId || null,
+  updatedAt: profile.updatedAt || null,
+});
+
+const normalizeAppState = (raw = {}) => {
+  if (!raw || typeof raw !== 'object') {
+    return createDefaultAppState();
+  }
+
+  if (!raw.profiles) {
+    return {
+      profiles: {
+        SID: normalizeProfileState({
+          tournaments: raw.tournaments,
+          currentTournamentId: raw.currentTournamentId,
+          updatedAt: raw.updatedAt,
+        }),
+        VISH: createEmptyProfileState(),
+      },
+      currentProfileId: normalizeProfileId(raw.currentProfileId),
+      updatedAt: raw.updatedAt || null,
+    };
+  }
+
+  return {
+    profiles: {
+      SID: normalizeProfileState(raw.profiles.SID),
+      VISH: normalizeProfileState(raw.profiles.VISH),
+    },
+    currentProfileId: normalizeProfileId(raw.currentProfileId),
+    updatedAt: raw.updatedAt || null,
+  };
+};
+
+const getAppState = () => {
   try {
     const data = localStorage.getItem(STORAGE_KEY);
-    if (data) {
-      const parsed = JSON.parse(data);
-      return {
-        tournaments: parsed.tournaments || [],
-        currentTournamentId: parsed.currentTournamentId || null,
-        updatedAt: parsed.updatedAt || null
-      };
+    if (!data) {
+      return createDefaultAppState();
     }
+
+    return normalizeAppState(JSON.parse(data));
   } catch (error) {
     console.error('Error reading from localStorage:', error);
+    return createDefaultAppState();
   }
-  return { tournaments: [], currentTournamentId: null, updatedAt: null };
+};
+
+const getActiveProfileState = (appState) => {
+  const profileId = normalizeProfileId(appState?.currentProfileId);
+  if (!profileId) {
+    return createEmptyProfileState();
+  }
+
+  return normalizeProfileState(appState?.profiles?.[profileId]);
 };
 
 const scheduleCloudSync = (data) => {
@@ -40,14 +104,19 @@ const scheduleCloudSync = (data) => {
   }, CLOUD_SYNC_THROTTLE_MS);
 };
 
-// Save all data to localStorage
+export const generateId = () => {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2);
+};
+
+export const getStorageData = () => {
+  const appState = getAppState();
+  return getActiveProfileState(appState);
+};
+
 export const saveStorageData = (data) => {
   try {
-    const nextData = {
-      ...data,
-      updatedAt: new Date().toISOString()
-    };
-
+    const nextData = normalizeAppState(data);
+    nextData.updatedAt = new Date().toISOString();
     localStorage.setItem(STORAGE_KEY, JSON.stringify(nextData));
     scheduleCloudSync(nextData);
   } catch (error) {
@@ -61,11 +130,11 @@ export const initSupabaseSync = async () => {
   }
 
   try {
-    const local = getStorageData();
-    const remote = await pullRemoteState();
+    const local = getAppState();
+    const remote = normalizeAppState(await pullRemoteState());
 
-    if (!remote) {
-      if (local.tournaments.length > 0) {
+    if (!remote?.updatedAt) {
+      if (local.updatedAt || local.profiles.SID.tournaments.length > 0 || local.profiles.VISH.tournaments.length > 0) {
         await pushRemoteState(local);
       }
       return true;
@@ -87,117 +156,178 @@ export const initSupabaseSync = async () => {
   }
 };
 
-// Tournament operations
+export const getCurrentProfile = () => {
+  return normalizeProfileId(getAppState().currentProfileId);
+};
+
+export const setCurrentProfile = (profileId) => {
+  const appState = getAppState();
+  appState.currentProfileId = normalizeProfileId(profileId);
+  saveStorageData(appState);
+};
+
+export const clearCurrentProfile = () => {
+  const appState = getAppState();
+  appState.currentProfileId = null;
+  saveStorageData(appState);
+};
+
+const commitProfileMutation = (profileId, updater) => {
+  const normalizedProfileId = normalizeProfileId(profileId) || getCurrentProfile();
+  if (!normalizedProfileId) return null;
+
+  const appState = getAppState();
+  const profileState = normalizeProfileState(appState.profiles[normalizedProfileId]);
+  const result = updater(profileState, appState);
+
+  profileState.updatedAt = new Date().toISOString();
+  appState.profiles[normalizedProfileId] = profileState;
+  appState.currentProfileId = normalizedProfileId;
+  saveStorageData(appState);
+
+  return result;
+};
+
 export const createTournament = (name, club, date, sidInvestment = 0) => {
-  const data = getStorageData();
-  const tournament = {
-    id: generateId(),
-    name,
-    club,
-    date,
-    sidInvestment: Number(sidInvestment) || 0,
-    createdAt: new Date().toISOString(),
-    expenses: [],
-    collections: []
-  };
-  data.tournaments.push(tournament);
-  data.currentTournamentId = tournament.id;
-  saveStorageData(data);
-  return tournament;
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = {
+      id: generateId(),
+      name,
+      club,
+      date,
+      sidInvestment: Number(sidInvestment) || 0,
+      createdAt: new Date().toISOString(),
+      expenses: [],
+      collections: [],
+      summaryHistory: [],
+    };
+
+    profileState.tournaments.push(tournament);
+    profileState.currentTournamentId = tournament.id;
+    return tournament;
+  });
 };
 
 export const updateTournament = (id, updates) => {
-  const data = getStorageData();
-  const index = data.tournaments.findIndex(t => t.id === id);
-  if (index !== -1) {
-    data.tournaments[index] = { ...data.tournaments[index], ...updates };
-    saveStorageData(data);
-    return data.tournaments[index];
-  }
-  return null;
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const index = profileState.tournaments.findIndex((tournament) => tournament.id === id);
+    if (index === -1) return null;
+
+    profileState.tournaments[index] = normalizeTournament({
+      ...profileState.tournaments[index],
+      ...updates,
+    });
+
+    return profileState.tournaments[index];
+  });
 };
 
 export const deleteTournament = (id) => {
-  const data = getStorageData();
-  data.tournaments = data.tournaments.filter(t => t.id !== id);
-  if (data.currentTournamentId === id) {
-    data.currentTournamentId = data.tournaments.length > 0 ? data.tournaments[0].id : null;
-  }
-  saveStorageData(data);
-  return data.currentTournamentId;
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    profileState.tournaments = profileState.tournaments.filter((tournament) => tournament.id !== id);
+    if (profileState.currentTournamentId === id) {
+      profileState.currentTournamentId = profileState.tournaments[0]?.id || null;
+    }
+    return profileState.currentTournamentId;
+  });
 };
 
 export const setCurrentTournament = (id) => {
-  const data = getStorageData();
-  data.currentTournamentId = id;
-  saveStorageData(data);
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    profileState.currentTournamentId = id || null;
+    return profileState.currentTournamentId;
+  });
 };
 
 export const getCurrentTournament = () => {
-  const data = getStorageData();
-  if (!data.currentTournamentId) return null;
-  return data.tournaments.find(t => t.id === data.currentTournamentId) || null;
+  const profileState = getStorageData();
+  if (!profileState.currentTournamentId) return null;
+  return profileState.tournaments.find((tournament) => tournament.id === profileState.currentTournamentId) || null;
 };
 
 export const getAllTournaments = () => {
-  const data = getStorageData();
-  return data.tournaments;
+  return getStorageData().tournaments;
 };
 
-// Expense operations
 export const addExpense = (tournamentId, expense) => {
-  const data = getStorageData();
-  const tournament = data.tournaments.find(t => t.id === tournamentId);
-  if (tournament) {
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = profileState.tournaments.find((item) => item.id === tournamentId);
+    if (!tournament) return null;
+
     const payer = String(expense.paidBy || '').toUpperCase();
-    const normalizedPayer = payer === 'SIDDHARTH' || payer === 'SID' ? 'SID' : (payer === 'VISHWESH' || payer === 'VISH' ? 'VISH' : payer);
+    const normalizedPayer = payer === 'SIDDHARTH' || payer === 'SID'
+      ? 'SID'
+      : payer === 'VISHWESH' || payer === 'VISH'
+        ? 'VISH'
+        : payer;
 
     tournament.expenses.push({
       id: generateId(),
       ...expense,
       paidBy: normalizedPayer,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     });
-    saveStorageData(data);
+
     return tournament.expenses;
-  }
-  return null;
+  });
 };
 
 export const deleteExpense = (tournamentId, expenseId) => {
-  const data = getStorageData();
-  const tournament = data.tournaments.find(t => t.id === tournamentId);
-  if (tournament) {
-    tournament.expenses = tournament.expenses.filter(e => e.id !== expenseId);
-    saveStorageData(data);
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = profileState.tournaments.find((item) => item.id === tournamentId);
+    if (!tournament) return null;
+
+    tournament.expenses = tournament.expenses.filter((expense) => expense.id !== expenseId);
     return tournament.expenses;
-  }
-  return null;
+  });
 };
 
-// Collection operations
 export const addCollection = (tournamentId, collection) => {
-  const data = getStorageData();
-  const tournament = data.tournaments.find(t => t.id === tournamentId);
-  if (tournament) {
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = profileState.tournaments.find((item) => item.id === tournamentId);
+    if (!tournament) return null;
+
     tournament.collections.push({
       id: generateId(),
       ...collection,
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     });
-    saveStorageData(data);
+
     return tournament.collections;
-  }
-  return null;
+  });
 };
 
 export const deleteCollection = (tournamentId, collectionId) => {
-  const data = getStorageData();
-  const tournament = data.tournaments.find(t => t.id === tournamentId);
-  if (tournament) {
-    tournament.collections = tournament.collections.filter(c => c.id !== collectionId);
-    saveStorageData(data);
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = profileState.tournaments.find((item) => item.id === tournamentId);
+    if (!tournament) return null;
+
+    tournament.collections = tournament.collections.filter((collection) => collection.id !== collectionId);
     return tournament.collections;
-  }
-  return null;
+  });
+};
+
+export const addSummaryHistory = (tournamentId, entry) => {
+  const currentProfileId = getCurrentProfile();
+  return commitProfileMutation(currentProfileId, (profileState) => {
+    const tournament = profileState.tournaments.find((item) => item.id === tournamentId);
+    if (!tournament) return null;
+
+    const nextEntry = {
+      id: generateId(),
+      createdAt: new Date().toISOString(),
+      ...entry,
+    };
+
+    tournament.summaryHistory = [nextEntry, ...(tournament.summaryHistory || [])].slice(0, SUMMARY_HISTORY_LIMIT);
+    return tournament.summaryHistory;
+  });
 };
